@@ -28,7 +28,7 @@ export function EventModal({ event, onClose }: EventModalProps) {
     if (event) {
       updateEvent(event.id, { name, description, dates: validDates });
     } else {
-      addEvent({ name, description, dates: validDates });
+      addEvent({ name, description, dates: validDates, eventPersonIds: [], eventVenueIds: [] });
     }
     onClose();
   };

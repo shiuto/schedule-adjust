@@ -4,6 +4,8 @@ export interface Event {
   description: string;
   dates: string[];
   createdAt: string;
+  eventPersonIds: string[];  // empty = all persons
+  eventVenueIds: string[];   // empty = all venues
 }
 
 export interface Person {

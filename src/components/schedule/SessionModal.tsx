@@ -12,20 +12,31 @@ interface SessionModalProps {
   eventId: string;
   date: string;
   defaultStart?: string;
+  defaultPersonId?: string;
   onClose: () => void;
 }
 
-export function SessionModal({ session, eventId, date, defaultStart = '09:00', onClose }: SessionModalProps) {
-  const { addSession, updateSession, sessions, persons, venues, areas } = useStore();
+export function SessionModal({
+  session, eventId, date, defaultStart = '09:00', defaultPersonId, onClose,
+}: SessionModalProps) {
+  const { addSession, updateSession, sessions, getEventPersons, getEventVenues, venues, areas } = useStore();
+
+  const eventPersons = getEventPersons(eventId);
+  const eventVenues = getEventVenues(eventId);
+
+  const calcDefaultEnd = (start: string) => {
+    const [h, m] = start.split(':').map(Number);
+    const total = h * 60 + m + 60;
+    return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+  };
+
   const [title, setTitle] = useState(session?.title || '');
   const [description, setDescription] = useState(session?.description || '');
   const [startTime, setStartTime] = useState(session?.startTime || defaultStart);
-  const [endTime, setEndTime] = useState(session?.endTime || (() => {
-    const [h, m] = defaultStart.split(':').map(Number);
-    const total = h * 60 + m + 60;
-    return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
-  })());
-  const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>(session?.personIds || []);
+  const [endTime, setEndTime] = useState(session?.endTime || calcDefaultEnd(defaultStart));
+  const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>(
+    session?.personIds || (defaultPersonId ? [defaultPersonId] : [])
+  );
   const [areaId, setAreaId] = useState<string | null>(session?.areaId ?? null);
   const [color, setColor] = useState(session?.color || PRESET_COLORS[0]);
 
@@ -34,20 +45,21 @@ export function SessionModal({ session, eventId, date, defaultStart = '09:00', o
   );
 
   const conflicts = selectedPersonIds.flatMap((pid) => {
-    const sStart = timeToMinutes(startTime);
-    const sEnd = timeToMinutes(endTime);
+    const sS = timeToMinutes(startTime);
+    const sE = timeToMinutes(endTime);
     return otherSessions
       .filter((s) => {
         if (!s.personIds.includes(pid)) return false;
-        const oStart = timeToMinutes(s.startTime);
-        const oEnd = timeToMinutes(s.endTime);
-        return sStart < oEnd && sEnd > oStart;
+        const oS = timeToMinutes(s.startTime);
+        const oE = timeToMinutes(s.endTime);
+        return sS < oE && sE > oS;
       })
       .map((s) => ({
-        person: persons.find((p) => p.id === pid)?.name || '?',
+        person: eventPersons.find((p) => p.id === pid)?.name || '?',
         session: s.title,
       }));
   });
+  const uniqueConflicts = [...new Map(conflicts.map((c) => [`${c.person}-${c.session}`, c])).values()];
 
   const togglePerson = (id: string) =>
     setSelectedPersonIds((prev) =>
@@ -56,29 +68,18 @@ export function SessionModal({ session, eventId, date, defaultStart = '09:00', o
 
   const getFlatAreas = (venueId: string) => {
     const venueAreas = areas.filter((a) => a.venueId === venueId);
-    const flatten = (parentId: string | null, depth: number): Array<{ id: string; name: string; depth: number }> => {
-      return venueAreas
+    const flatten = (parentId: string | null, depth: number): Array<{ id: string; name: string; depth: number }> =>
+      venueAreas
         .filter((a) => a.parentId === parentId)
         .flatMap((a) => [{ id: a.id, name: a.name, depth }, ...flatten(a.id, depth + 1)]);
-    };
     return flatten(null, 0);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
-    const data = {
-      eventId, date, title, description,
-      startTime, endTime,
-      personIds: selectedPersonIds,
-      areaId,
-      color,
-    };
-    if (session) {
-      updateSession(session.id, data);
-    } else {
-      addSession(data);
-    }
+    const data = { eventId, date, title, description, startTime, endTime, personIds: selectedPersonIds, areaId, color };
+    if (session) { updateSession(session.id, data); } else { addSession(data); }
     onClose();
   };
 
@@ -94,8 +95,7 @@ export function SessionModal({ session, eventId, date, defaultStart = '09:00', o
             onChange={(e) => setTitle(e.target.value)}
             placeholder="例：開会式、VIPランチ、記者会見"
             className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            required
-            autoFocus
+            required autoFocus
           />
         </div>
         <div>
@@ -129,14 +129,14 @@ export function SessionModal({ session, eventId, date, defaultStart = '09:00', o
           </div>
         </div>
 
-        {conflicts.length > 0 && (
-          <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-            <AlertTriangle size={16} className="shrink-0 mt-0.5 text-amber-500" />
+        {uniqueConflicts.length > 0 && (
+          <div className="flex items-start gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+            <AlertTriangle size={15} className="text-amber-500 shrink-0 mt-0.5" />
             <div>
-              <p className="font-semibold text-sm mb-1">ダブルブッキング検出</p>
-              {[...new Map(conflicts.map((c) => [`${c.person}-${c.session}`, c])).values()].map((c, i) => (
-                <p key={i} className="text-xs">
-                  <span className="font-medium">{c.person}</span> が「{c.session}」と時間が重複しています
+              <p className="text-sm font-semibold text-amber-800 mb-0.5">ダブルブッキング検出</p>
+              {uniqueConflicts.map((c, i) => (
+                <p key={i} className="text-xs text-amber-700">
+                  <span className="font-medium">{c.person}</span> →「{c.session}」と重複
                 </p>
               ))}
             </div>
@@ -145,11 +145,13 @@ export function SessionModal({ session, eventId, date, defaultStart = '09:00', o
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">参加者</label>
-          {persons.length === 0 ? (
-            <p className="text-sm text-gray-400 py-2">人物をサイドバーから先に追加してください</p>
+          {eventPersons.length === 0 ? (
+            <p className="text-sm text-gray-400 py-2 px-3 bg-gray-50 rounded-lg">
+              サイドバーの「人物」タブから人物を追加・設定してください
+            </p>
           ) : (
             <div className="flex flex-wrap gap-2">
-              {persons.map((p) => {
+              {eventPersons.map((p) => {
                 const selected = selectedPersonIds.includes(p.id);
                 return (
                   <button
@@ -157,14 +159,11 @@ export function SessionModal({ session, eventId, date, defaultStart = '09:00', o
                     type="button"
                     onClick={() => togglePerson(p.id)}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border-2 transition-all ${
-                      selected
-                        ? 'border-transparent shadow-sm scale-105'
-                        : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                      selected ? 'border-transparent shadow-sm scale-105' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
                     }`}
                     style={selected ? { backgroundColor: p.color, color: contrastColor(p.color) } : {}}
                   >
-                    <span>{p.name}</span>
-                    {p.role && <span className="opacity-60">·{p.role}</span>}
+                    {p.name}{p.role && <span className="opacity-60">·{p.role}</span>}
                   </button>
                 );
               })}
@@ -174,8 +173,10 @@ export function SessionModal({ session, eventId, date, defaultStart = '09:00', o
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">エリア</label>
-          {venues.length === 0 ? (
-            <p className="text-sm text-gray-400 py-2">会場をサイドバーから先に追加してください</p>
+          {eventVenues.length === 0 ? (
+            <p className="text-sm text-gray-400 py-2 px-3 bg-gray-50 rounded-lg">
+              サイドバーの「会場」タブから会場を追加・設定してください
+            </p>
           ) : (
             <select
               value={areaId || ''}
@@ -183,7 +184,7 @@ export function SessionModal({ session, eventId, date, defaultStart = '09:00', o
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="">エリア未指定</option>
-              {venues.map((v) => {
+              {eventVenues.map((v) => {
                 const flat = getFlatAreas(v.id);
                 if (flat.length === 0) return null;
                 return (
@@ -206,17 +207,10 @@ export function SessionModal({ session, eventId, date, defaultStart = '09:00', o
         </div>
 
         <div className="flex gap-2 justify-end pt-2 border-t">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 text-sm rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700"
-          >
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700">
             キャンセル
           </button>
-          <button
-            type="submit"
-            className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 font-medium"
-          >
+          <button type="submit" className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 font-medium">
             {session ? '更新する' : '追加する'}
           </button>
         </div>

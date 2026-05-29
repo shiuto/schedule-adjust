@@ -1,125 +1,132 @@
 import { useState, useRef, useCallback } from 'react';
 import { useStore } from '../../store/useStore';
-import { Session } from '../../types';
+import { Session, Person } from '../../types';
 import { SessionModal } from './SessionModal';
 import { ConfirmDialog } from '../common/ConfirmDialog';
+import { ContextMenu, ContextMenuItem } from '../common/ContextMenu';
 import { contrastColor } from '../../utils/colors';
 import { timeToMinutes, minutesToTime } from '../../utils/time';
-import { Clock, MapPin, Pencil, Trash2, Plus } from 'lucide-react';
+import { Clock, MapPin, Pencil, Trash2, Copy, Plus } from 'lucide-react';
 
 const START_HOUR = 6;
 const END_HOUR = 24;
 const HOUR_WIDTH = 120;
-const ROW_HEIGHT = 72;
-const HEADER_HEIGHT = 48;
-const LABEL_WIDTH = 160;
+const ROW_HEIGHT = 68;
+const HEADER_HEIGHT = 44;
+const LABEL_WIDTH = 168;
+const DRAG_THRESHOLD = 4;
 
 function timeToX(time: string): number {
   return ((timeToMinutes(time) - START_HOUR * 60) / 60) * HOUR_WIDTH;
 }
 
 function xToTime(x: number): string {
-  const rawMinutes = (x / HOUR_WIDTH) * 60 + START_HOUR * 60;
-  const snapped = Math.round(rawMinutes / 15) * 15;
-  const clamped = Math.max(START_HOUR * 60, Math.min(END_HOUR * 60, snapped));
+  const raw = (x / HOUR_WIDTH) * 60 + START_HOUR * 60;
+  const snapped = Math.round(raw / 15) * 15;
+  const clamped = Math.max(START_HOUR * 60, Math.min(END_HOUR * 60 - 15, snapped));
   return minutesToTime(clamped);
 }
+
+// ─── Session Block ────────────────────────────────────────────────────────────
 
 interface SessionBlockProps {
   session: Session;
   rowIndex: number;
   onEdit: () => void;
   onDelete: () => void;
+  onDuplicate: () => void;
   onUpdate: (startTime: string, endTime: string) => void;
+  onContextMenu: (e: React.MouseEvent) => void;
 }
 
-function SessionBlock({ session, rowIndex, onEdit, onDelete, onUpdate }: SessionBlockProps) {
+function SessionBlock({
+  session, rowIndex, onEdit, onDelete, onDuplicate, onUpdate, onContextMenu,
+}: SessionBlockProps) {
   const { areas } = useStore();
   const area = session.areaId ? areas.find((a) => a.id === session.areaId) : null;
-
-  const x = timeToX(session.startTime);
-  const endX = timeToX(session.endTime);
-  const width = Math.max(endX - x, 40);
-  const top = HEADER_HEIGHT + rowIndex * ROW_HEIGHT + 6;
-
+  const moved = useRef(false);
+  const downPos = useRef({ x: 0, y: 0 });
   const dragState = useRef<{
     type: 'move' | 'resize';
-    startX: number;
     origStart: string;
     origEnd: string;
   } | null>(null);
 
-  const startDrag = useCallback((e: React.MouseEvent, type: 'move' | 'resize') => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragState.current = {
-      type,
-      startX: e.clientX,
-      origStart: session.startTime,
-      origEnd: session.endTime,
-    };
-
-    const onMove = (ev: MouseEvent) => {
-      if (!dragState.current) return;
-      const dx = ev.clientX - dragState.current.startX;
-      const dMin = Math.round((dx / HOUR_WIDTH) * 60 / 15) * 15;
-      if (dragState.current.type === 'move') {
-        const origStart = timeToMinutes(dragState.current.origStart);
-        const origEnd = timeToMinutes(dragState.current.origEnd);
-        const dur = origEnd - origStart;
-        const newStart = Math.max(START_HOUR * 60, Math.min(END_HOUR * 60 - dur, origStart + dMin));
-        onUpdate(minutesToTime(newStart), minutesToTime(newStart + dur));
-      } else {
-        const origStart = timeToMinutes(dragState.current.origStart);
-        const origEnd = timeToMinutes(dragState.current.origEnd);
-        const newEnd = Math.max(origStart + 15, Math.min(END_HOUR * 60, origEnd + dMin));
-        onUpdate(dragState.current.origStart, minutesToTime(newEnd));
-      }
-    };
-
-    const onUp = () => {
-      dragState.current = null;
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  }, [session, onUpdate]);
+  const x = timeToX(session.startTime);
+  const width = Math.max(timeToX(session.endTime) - x, 36);
+  const top = rowIndex * ROW_HEIGHT + 5;
+  const height = ROW_HEIGHT - 10;
+  const isNarrow = width < 80;
 
   const bg = session.color || '#3b82f6';
   const fg = contrastColor(bg);
-  const duration = timeToMinutes(session.endTime) - timeToMinutes(session.startTime);
-  const isNarrow = width < 90;
+
+  const startDrag = useCallback(
+    (e: React.MouseEvent, type: 'move' | 'resize') => {
+      e.preventDefault();
+      e.stopPropagation();
+      moved.current = false;
+      downPos.current = { x: e.clientX, y: e.clientY };
+      dragState.current = { type, origStart: session.startTime, origEnd: session.endTime };
+
+      const onMove = (ev: MouseEvent) => {
+        const dx = Math.abs(ev.clientX - downPos.current.x);
+        const dy = Math.abs(ev.clientY - downPos.current.y);
+        if (dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD) moved.current = true;
+        if (!moved.current || !dragState.current) return;
+
+        const totalDx = ev.clientX - downPos.current.x;
+        const dMin = Math.round((totalDx / HOUR_WIDTH) * 60 / 15) * 15;
+
+        if (dragState.current.type === 'move') {
+          const origS = timeToMinutes(dragState.current.origStart);
+          const origE = timeToMinutes(dragState.current.origEnd);
+          const dur = origE - origS;
+          const newS = Math.max(START_HOUR * 60, Math.min(END_HOUR * 60 - dur, origS + dMin));
+          onUpdate(minutesToTime(newS), minutesToTime(newS + dur));
+        } else {
+          const origS = timeToMinutes(dragState.current.origStart);
+          const origE = timeToMinutes(dragState.current.origEnd);
+          const newE = Math.max(origS + 15, Math.min(END_HOUR * 60, origE + dMin));
+          onUpdate(dragState.current.origStart, minutesToTime(newE));
+        }
+      };
+
+      const onUp = () => {
+        dragState.current = null;
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+    [session, onUpdate]
+  );
+
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!moved.current) onEdit();
+  };
 
   return (
     <div
-      className="absolute rounded-lg shadow-md select-none cursor-move group hover:shadow-lg hover:z-20 transition-shadow"
-      style={{
-        left: x,
-        top,
-        width,
-        height: ROW_HEIGHT - 12,
-        backgroundColor: bg,
-        color: fg,
-        zIndex: 10,
-      }}
+      className="absolute group rounded-lg shadow-md select-none hover:shadow-lg hover:z-20 transition-shadow cursor-pointer"
+      style={{ left: x, top, width, height, backgroundColor: bg, color: fg, zIndex: 10 }}
       onMouseDown={(e) => startDrag(e, 'move')}
-      onDoubleClick={(e) => { e.stopPropagation(); onEdit(); }}
+      onClick={handleClick}
+      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(e); }}
+      title={`${session.title}\n${session.startTime}–${session.endTime}${area ? `\n📍 ${area.name}` : ''}`}
     >
-      <div className="flex flex-col h-full px-2 py-1.5 overflow-hidden">
+      <div className="h-full flex flex-col px-2 py-1 overflow-hidden pointer-events-none">
         {isNarrow ? (
-          <span className="text-xs font-bold leading-tight truncate" title={session.title}>
-            {session.title[0]}
-          </span>
+          <span className="text-[10px] font-bold truncate leading-tight">{session.title[0]}</span>
         ) : (
           <>
             <span className="text-xs font-bold leading-tight truncate">{session.title}</span>
-            <span className="text-xs opacity-80 leading-tight">
-              {session.startTime}–{session.endTime}
-            </span>
-            {area && !isNarrow && (
-              <span className="text-xs opacity-60 leading-tight flex items-center gap-0.5 mt-0.5 truncate">
+            <span className="text-[11px] opacity-80 leading-tight">{session.startTime}–{session.endTime}</span>
+            {area && (
+              <span className="text-[10px] opacity-60 leading-tight flex items-center gap-0.5 mt-0.5 truncate">
                 <MapPin size={8} />{area.name}
               </span>
             )}
@@ -129,36 +136,16 @@ function SessionBlock({ session, rowIndex, onEdit, onDelete, onUpdate }: Session
 
       {/* Resize handle */}
       <div
-        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 rounded-r-lg"
-        style={{ backgroundColor: 'rgba(0,0,0,0.15)' }}
-        onMouseDown={(e) => startDrag(e, 'resize')}
+        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r-lg opacity-0 group-hover:opacity-100"
+        style={{ backgroundColor: 'rgba(0,0,0,0.18)' }}
+        onMouseDown={(e) => { e.stopPropagation(); startDrag(e, 'resize'); }}
+        onClick={(e) => e.stopPropagation()}
       />
-
-      {/* Action buttons - show on hover */}
-      {!isNarrow && (
-        <div
-          className="absolute top-1 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <button
-            onClick={(e) => { e.stopPropagation(); onEdit(); }}
-            className="w-5 h-5 rounded flex items-center justify-center hover:scale-110 transition-transform"
-            style={{ backgroundColor: 'rgba(0,0,0,0.2)' }}
-          >
-            <Pencil size={9} />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            className="w-5 h-5 rounded flex items-center justify-center hover:scale-110 transition-transform"
-            style={{ backgroundColor: 'rgba(0,0,0,0.2)' }}
-          >
-            <Trash2 size={9} />
-          </button>
-        </div>
-      )}
     </div>
   );
 }
+
+// ─── Timeline ─────────────────────────────────────────────────────────────────
 
 interface TimelineProps {
   eventId: string;
@@ -167,17 +154,23 @@ interface TimelineProps {
   filterAreaIds: string[];
 }
 
-export function Timeline({ eventId, date, filterPersonIds, filterAreaIds }: TimelineProps) {
-  const { persons, sessions, areas, updateSession, deleteSession } = useStore();
-  const [editSession, setEditSession] = useState<Session | null>(null);
-  const [showAdd, setShowAdd] = useState<{ defaultStart: string } | null>(null);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
-  const [hoveredTime, setHoveredTime] = useState<string | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+interface CtxMenuState {
+  x: number;
+  y: number;
+  session: Session;
+}
 
+export function Timeline({ eventId, date, filterPersonIds, filterAreaIds }: TimelineProps) {
+  const { getEventPersons, sessions, areas, updateSession, deleteSession, duplicateSession } = useStore();
+  const [editSession, setEditSession] = useState<Session | null>(null);
+  const [addDefault, setAddDefault] = useState<{ time: string; personId?: string } | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
+
+  const allEventPersons = getEventPersons(eventId);
   const visiblePersons = filterPersonIds.length > 0
-    ? persons.filter((p) => filterPersonIds.includes(p.id))
-    : persons;
+    ? allEventPersons.filter((p) => filterPersonIds.includes(p.id))
+    : allEventPersons;
 
   const daySessions = sessions.filter(
     (s) =>
@@ -188,195 +181,283 @@ export function Timeline({ eventId, date, filterPersonIds, filterAreaIds }: Time
 
   const hours = Array.from({ length: END_HOUR - START_HOUR }, (_, i) => START_HOUR + i);
   const gridWidth = (END_HOUR - START_HOUR) * HOUR_WIDTH;
-  const gridHeight = Math.max(visiblePersons.length * ROW_HEIGHT, 100);
+  const nRows = Math.max(visiblePersons.length, 1);
+  const gridHeight = nRows * ROW_HEIGHT;
+  const totalWidth = LABEL_WIDTH + gridWidth;
+  const totalHeight = HEADER_HEIGHT + gridHeight;
 
-  const handleGridClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const clickedTime = xToTime(x);
-    setShowAdd({ defaultStart: clickedTime });
-  }, []);
+  // Current time indicator
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const showNow = nowMin >= START_HOUR * 60 && nowMin <= END_HOUR * 60;
+  const nowX = LABEL_WIDTH + ((nowMin - START_HOUR * 60) / 60) * HOUR_WIDTH;
 
-  const handleGridMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    setHoveredTime(xToTime(x));
-  }, []);
+  const handleGridClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>, personId?: string) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      setAddDefault({ time: xToTime(x), personId });
+    },
+    []
+  );
+
+  const ctxItems = (session: Session): ContextMenuItem[] => [
+    {
+      label: '編集',
+      icon: <Pencil size={14} />,
+      onClick: () => setEditSession(session),
+    },
+    {
+      label: '複製',
+      icon: <Copy size={14} />,
+      onClick: () => duplicateSession(session.id),
+    },
+    {
+      label: '削除',
+      icon: <Trash2 size={14} />,
+      onClick: () => setDeleteId(session.id),
+      danger: true,
+      divider: true,
+    },
+  ];
+
+  // Build a map: personId → sorted sessions
+  const sessionsByPerson = new Map<string, Session[]>();
+  daySessions.forEach((sess) => {
+    sess.personIds.forEach((pid) => {
+      if (!sessionsByPerson.has(pid)) sessionsByPerson.set(pid, []);
+      sessionsByPerson.get(pid)!.push(sess);
+    });
+  });
+
+  // Unassigned sessions (no person or person not in visiblePersons)
+  const unassignedSessions = daySessions.filter(
+    (s) =>
+      s.personIds.length === 0 ||
+      !s.personIds.some((pid) => visiblePersons.find((p) => p.id === pid))
+  );
 
   return (
-    <div className="flex flex-col h-full">
-      <div
-        className="overflow-auto flex-1"
-        ref={scrollRef}
-        style={{ scrollbarWidth: 'thin' }}
-      >
-        <div
-          className="relative"
-          style={{ width: LABEL_WIDTH + gridWidth, minHeight: HEADER_HEIGHT + gridHeight + 32 }}
-        >
-          {/* Corner */}
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="overflow-auto flex-1" style={{ scrollbarWidth: 'thin' }}>
+        <div style={{ position: 'relative', width: totalWidth, height: totalHeight, minHeight: '100%' }}>
+
+          {/* ── Sticky header row ── */}
           <div
-            className="sticky left-0 top-0 z-30 bg-white border-b border-r border-gray-200"
             style={{
               position: 'sticky',
-              left: 0,
               top: 0,
-              width: LABEL_WIDTH,
+              zIndex: 25,
+              display: 'flex',
               height: HEADER_HEIGHT,
+              backgroundColor: '#fff',
+              borderBottom: '1px solid #e5e7eb',
             }}
           >
-            {hoveredTime && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-xs font-mono text-gray-500">{hoveredTime}</span>
-              </div>
-            )}
+            {/* Corner */}
+            <div
+              style={{
+                position: 'sticky',
+                left: 0,
+                zIndex: 35,
+                width: LABEL_WIDTH,
+                flexShrink: 0,
+                backgroundColor: '#fff',
+                borderRight: '1px solid #e5e7eb',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <span className="text-xs text-gray-400 font-medium">
+                {visiblePersons.length > 0 ? `${visiblePersons.length}名` : ''}
+              </span>
+            </div>
+            {/* Time labels */}
+            <div style={{ position: 'relative', width: gridWidth, flexShrink: 0 }}>
+              {hours.map((h) => (
+                <div
+                  key={h}
+                  className="absolute flex items-center"
+                  style={{ left: (h - START_HOUR) * HOUR_WIDTH, top: 0, height: HEADER_HEIGHT, paddingLeft: 6 }}
+                >
+                  <span className="text-xs text-gray-500 font-medium tabular-nums">
+                    {String(h).padStart(2, '0')}:00
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
 
-          {/* Time header */}
-          <div
-            className="absolute top-0 bg-white border-b border-gray-200"
-            style={{ left: LABEL_WIDTH, height: HEADER_HEIGHT, width: gridWidth, position: 'sticky', top: 0, zIndex: 20 }}
-          >
-            {hours.map((h) => (
-              <div
-                key={h}
-                className="absolute flex items-center"
-                style={{
-                  left: (h - START_HOUR) * HOUR_WIDTH,
-                  top: 0,
-                  height: HEADER_HEIGHT,
-                  width: HOUR_WIDTH,
-                }}
-              >
-                <span className="text-xs text-gray-500 font-medium pl-1">
-                  {String(h).padStart(2, '0')}:00
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* Person labels */}
-          <div
-            className="absolute top-0 left-0 bg-white border-r border-gray-200"
-            style={{ width: LABEL_WIDTH, zIndex: 15, position: 'sticky', left: 0 }}
-          >
-            {visiblePersons.map((person, i) => (
+          {/* ── Person rows ── */}
+          {visiblePersons.map((person, rowIdx) => {
+            const rowTop = HEADER_HEIGHT + rowIdx * ROW_HEIGHT;
+            return (
               <div
                 key={person.id}
-                className="absolute flex items-center gap-2 px-3 border-b border-gray-100"
-                style={{
-                  top: HEADER_HEIGHT + i * ROW_HEIGHT,
-                  height: ROW_HEIGHT,
-                  width: LABEL_WIDTH,
-                }}
+                style={{ position: 'absolute', top: rowTop, left: 0, width: totalWidth, height: ROW_HEIGHT }}
               >
+                {/* Label – sticky left */}
                 <div
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 shadow-sm"
-                  style={{ backgroundColor: person.color, color: contrastColor(person.color) }}
+                  style={{
+                    position: 'sticky',
+                    left: 0,
+                    zIndex: 12,
+                    width: LABEL_WIDTH,
+                    height: ROW_HEIGHT,
+                    backgroundColor: rowIdx % 2 === 0 ? '#fff' : '#f9fafb',
+                    borderRight: '1px solid #e5e7eb',
+                    borderBottom: '1px solid #f3f4f6',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    paddingLeft: 10,
+                    paddingRight: 8,
+                  }}
                 >
-                  {person.name[0]}
+                  <div
+                    className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 shadow-sm"
+                    style={{ backgroundColor: person.color, color: contrastColor(person.color) }}
+                  >
+                    {person.name[0]}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-gray-800 truncate leading-tight">{person.name}</p>
+                    {person.role && (
+                      <p className="text-[10px] text-gray-400 truncate leading-tight">{person.role}</p>
+                    )}
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold text-gray-800 truncate">{person.name}</p>
-                  {person.role && (
-                    <p className="text-xs text-gray-400 truncate">{person.role}</p>
-                  )}
+
+                {/* Clickable grid cell */}
+                <div
+                  className="absolute cursor-crosshair"
+                  style={{
+                    left: LABEL_WIDTH,
+                    top: 0,
+                    width: gridWidth,
+                    height: ROW_HEIGHT,
+                    backgroundColor: rowIdx % 2 === 0 ? '#fff' : '#f9fafb',
+                    borderBottom: '1px solid #f3f4f6',
+                  }}
+                  onClick={(e) => handleGridClick(e, person.id)}
+                >
+                  {/* Hour lines */}
+                  {hours.map((h) => (
+                    <div
+                      key={h}
+                      className="absolute top-0 bottom-0 border-l border-gray-100"
+                      style={{ left: (h - START_HOUR) * HOUR_WIDTH }}
+                    />
+                  ))}
+                  {/* 30-min dashed */}
+                  {hours.map((h) => (
+                    <div
+                      key={`${h}-30`}
+                      className="absolute top-0 bottom-0 border-l border-dashed border-gray-100"
+                      style={{ left: (h - START_HOUR) * HOUR_WIDTH + HOUR_WIDTH / 2 }}
+                    />
+                  ))}
+                  {/* Add hint on empty row hover */}
+                  <div className="absolute inset-0 flex items-center opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
+                    <div className="flex items-center gap-1 text-gray-200 text-xs ml-2">
+                      <Plus size={10} /> クリックして追加
+                    </div>
+                  </div>
                 </div>
               </div>
-            ))}
-          </div>
+            );
+          })}
 
-          {/* Grid area */}
+          {/* ── Session blocks layer ── */}
           <div
-            className="absolute cursor-crosshair"
             style={{
+              position: 'absolute',
               left: LABEL_WIDTH,
               top: HEADER_HEIGHT,
               width: gridWidth,
               height: gridHeight,
+              pointerEvents: 'none',
             }}
-            onClick={handleGridClick}
-            onMouseMove={handleGridMouseMove}
-            onMouseLeave={() => setHoveredTime(null)}
           >
-            {/* Row backgrounds */}
-            {visiblePersons.map((_, i) => (
-              <div
-                key={i}
-                className={`absolute w-full border-b border-gray-100 ${i % 2 === 1 ? 'bg-gray-50/50' : 'bg-white'}`}
-                style={{ top: i * ROW_HEIGHT, height: ROW_HEIGHT }}
-              />
-            ))}
-
-            {/* Hour grid lines */}
-            {hours.map((h) => (
-              <div
-                key={h}
-                className="absolute top-0 bottom-0 border-l border-gray-200"
-                style={{ left: (h - START_HOUR) * HOUR_WIDTH }}
-              />
-            ))}
-
-            {/* 30-min dashed lines */}
-            {hours.map((h) => (
-              <div
-                key={`${h}-30`}
-                className="absolute top-0 bottom-0 border-l border-dashed border-gray-100"
-                style={{ left: (h - START_HOUR) * HOUR_WIDTH + HOUR_WIDTH / 2 }}
-              />
-            ))}
-
-            {/* 15-min subtle lines */}
-            {hours.flatMap((h) => [1, 3].map((q) => (
-              <div
-                key={`${h}-${q}`}
-                className="absolute top-0 bottom-0 border-l border-gray-50"
-                style={{ left: (h - START_HOUR) * HOUR_WIDTH + (HOUR_WIDTH / 4) * q }}
-              />
-            )))}
-
-            {/* Session blocks */}
-            {daySessions.map((session) => {
-              const personIndex = visiblePersons.findIndex((p) =>
-                session.personIds.includes(p.id)
-              );
-              if (personIndex === -1 && visiblePersons.length > 0 && session.personIds.length > 0) return null;
-              const rowIdx = personIndex >= 0 ? personIndex : 0;
-              return (
-                <SessionBlock
-                  key={session.id}
-                  session={session}
-                  rowIndex={rowIdx}
-                  onEdit={() => setEditSession(session)}
-                  onDelete={() => setDeleteId(session.id)}
-                  onUpdate={(s, e) => updateSession(session.id, { startTime: s, endTime: e })}
-                />
-              );
+            {visiblePersons.map((person, rowIdx) => {
+              const personSessions = sessionsByPerson.get(person.id) || [];
+              return personSessions.map((session) => (
+                <div
+                  key={`${session.id}-${person.id}`}
+                  style={{
+                    position: 'absolute',
+                    top: rowIdx * ROW_HEIGHT,
+                    left: 0,
+                    width: gridWidth,
+                    height: ROW_HEIGHT,
+                    pointerEvents: 'none',
+                  }}
+                >
+                  <div style={{ pointerEvents: 'auto' }}>
+                    <SessionBlock
+                      session={session}
+                      rowIndex={0}
+                      onEdit={() => setEditSession(session)}
+                      onDelete={() => setDeleteId(session.id)}
+                      onDuplicate={() => duplicateSession(session.id)}
+                      onUpdate={(s, e) => updateSession(session.id, { startTime: s, endTime: e })}
+                      onContextMenu={(e) => setCtxMenu({ x: e.clientX, y: e.clientY, session })}
+                    />
+                  </div>
+                </div>
+              ));
             })}
           </div>
+
+          {/* Current time line */}
+          {showNow && (
+            <div
+              className="absolute top-0 bottom-0 z-20 pointer-events-none"
+              style={{ left: nowX, width: 1.5, backgroundColor: '#ef4444' }}
+            >
+              <div
+                className="absolute w-2.5 h-2.5 rounded-full bg-red-500"
+                style={{ top: HEADER_HEIGHT - 5, left: -4.5 }}
+              />
+            </div>
+          )}
 
           {/* Empty state */}
           {visiblePersons.length === 0 && (
             <div
               className="absolute flex flex-col items-center justify-center text-gray-400 pointer-events-none"
-              style={{ left: LABEL_WIDTH, top: HEADER_HEIGHT, width: gridWidth, height: 200 }}
+              style={{ left: LABEL_WIDTH, top: HEADER_HEIGHT, width: gridWidth, height: 220 }}
             >
-              <Clock size={36} className="mb-3 text-gray-200" />
-              <p className="text-sm font-medium text-gray-400">人物を追加してスケジュールを作成</p>
-              <p className="text-xs text-gray-300 mt-1">サイドバーの「人物」タブから追加できます</p>
+              <Clock size={40} className="mb-3 text-gray-200" />
+              <p className="text-sm font-medium text-gray-400">人物をサイドバーから追加してください</p>
+              <p className="text-xs text-gray-300 mt-1">「人物」タブで追加・イベントへの参加設定ができます</p>
             </div>
           )}
 
-          {visiblePersons.length > 0 && daySessions.length === 0 && (
+          {/* Unassigned sessions notice */}
+          {unassignedSessions.length > 0 && visiblePersons.length > 0 && (
             <div
-              className="absolute flex flex-col items-center justify-center pointer-events-none"
-              style={{ left: LABEL_WIDTH, top: HEADER_HEIGHT + gridHeight / 2 - 30, width: gridWidth }}
+              className="absolute pointer-events-none"
+              style={{ left: LABEL_WIDTH + 8, top: HEADER_HEIGHT + 4, zIndex: 5 }}
             >
-              <p className="text-xs text-gray-300">タイムラインをクリックしてセッションを追加</p>
+              <span className="text-xs text-amber-500 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                未割当セッション {unassignedSessions.length}件（リスト表示で確認）
+              </span>
             </div>
           )}
         </div>
       </div>
+
+      {/* Context menu */}
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          items={ctxItems(ctxMenu.session)}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
 
       {editSession && (
         <SessionModal
@@ -386,12 +467,13 @@ export function Timeline({ eventId, date, filterPersonIds, filterAreaIds }: Time
           onClose={() => setEditSession(null)}
         />
       )}
-      {showAdd && (
+      {addDefault && (
         <SessionModal
           eventId={eventId}
           date={date}
-          defaultStart={showAdd.defaultStart}
-          onClose={() => setShowAdd(null)}
+          defaultStart={addDefault.time}
+          defaultPersonId={addDefault.personId}
+          onClose={() => setAddDefault(null)}
         />
       )}
       {deleteId && (

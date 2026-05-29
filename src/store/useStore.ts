@@ -15,25 +15,39 @@ interface AppState {
   setCurrentEvent: (id: string | null) => void;
   setCurrentDate: (date: string | null) => void;
 
+  // Events CRUD
   addEvent: (e: Omit<Event, 'id' | 'createdAt'>) => Event;
   updateEvent: (id: string, updates: Partial<Event>) => void;
   deleteEvent: (id: string) => void;
 
+  // Per-event person/venue selection
+  toggleEventPerson: (eventId: string, personId: string) => void;
+  toggleEventVenue: (eventId: string, venueId: string) => void;
+  getEventPersons: (eventId: string) => Person[];
+  getEventVenues: (eventId: string) => Venue[];
+
+  // Persons CRUD
   addPerson: (p: Omit<Person, 'id'>) => Person;
   updatePerson: (id: string, updates: Partial<Person>) => void;
   deletePerson: (id: string) => void;
+  duplicatePerson: (id: string) => Person;
 
+  // Venues CRUD
   addVenue: (v: Omit<Venue, 'id'>) => Venue;
   updateVenue: (id: string, updates: Partial<Venue>) => void;
   deleteVenue: (id: string) => void;
 
+  // Areas CRUD
   addArea: (a: Omit<Area, 'id'>) => Area;
   updateArea: (id: string, updates: Partial<Area>) => void;
   deleteArea: (id: string) => void;
+  duplicateArea: (id: string) => Area;
 
+  // Sessions CRUD
   addSession: (s: Omit<Session, 'id'>) => Session;
   updateSession: (id: string, updates: Partial<Session>) => void;
   deleteSession: (id: string) => void;
+  duplicateSession: (id: string) => Session;
 
   exportData: () => string;
   importData: (json: string) => boolean;
@@ -53,8 +67,66 @@ export const useStore = create<AppState>()(
       setCurrentEvent: (id) => set({ currentEventId: id, currentDate: null }),
       setCurrentDate: (date) => set({ currentDate: date }),
 
+      // Per-event selection helpers
+      toggleEventPerson: (eventId, personId) => {
+        set((s) => {
+          const event = s.events.find((e) => e.id === eventId);
+          if (!event) return s;
+          const allIds = s.persons.map((p) => p.id);
+          const current = event.eventPersonIds.length === 0 ? allIds : event.eventPersonIds;
+          const next = current.includes(personId)
+            ? current.filter((id) => id !== personId)
+            : [...current, personId];
+          // If all persons selected → reset to "all" mode (empty)
+          const final = next.length === allIds.length ? [] : next;
+          return {
+            events: s.events.map((e) =>
+              e.id === eventId ? { ...e, eventPersonIds: final } : e
+            ),
+          };
+        });
+      },
+
+      toggleEventVenue: (eventId, venueId) => {
+        set((s) => {
+          const event = s.events.find((e) => e.id === eventId);
+          if (!event) return s;
+          const allIds = s.venues.map((v) => v.id);
+          const current = event.eventVenueIds.length === 0 ? allIds : event.eventVenueIds;
+          const next = current.includes(venueId)
+            ? current.filter((id) => id !== venueId)
+            : [...current, venueId];
+          const final = next.length === allIds.length ? [] : next;
+          return {
+            events: s.events.map((e) =>
+              e.id === eventId ? { ...e, eventVenueIds: final } : e
+            ),
+          };
+        });
+      },
+
+      getEventPersons: (eventId) => {
+        const { events, persons } = get();
+        const event = events.find((e) => e.id === eventId);
+        if (!event || event.eventPersonIds.length === 0) return persons;
+        return persons.filter((p) => event.eventPersonIds.includes(p.id));
+      },
+
+      getEventVenues: (eventId) => {
+        const { events, venues } = get();
+        const event = events.find((e) => e.id === eventId);
+        if (!event || event.eventVenueIds.length === 0) return venues;
+        return venues.filter((v) => event.eventVenueIds.includes(v.id));
+      },
+
       addEvent: (e) => {
-        const event = { ...e, id: generateId(), createdAt: new Date().toISOString() };
+        const event: Event = {
+          ...e,
+          id: generateId(),
+          createdAt: new Date().toISOString(),
+          eventPersonIds: e.eventPersonIds ?? [],
+          eventVenueIds: e.eventVenueIds ?? [],
+        };
         set((s) => ({ events: [...s.events, event] }));
         return event;
       },
@@ -77,11 +149,22 @@ export const useStore = create<AppState>()(
       deletePerson: (id) =>
         set((s) => ({
           persons: s.persons.filter((p) => p.id !== id),
+          events: s.events.map((e) => ({
+            ...e,
+            eventPersonIds: e.eventPersonIds.filter((pid) => pid !== id),
+          })),
           sessions: s.sessions.map((sess) => ({
             ...sess,
             personIds: sess.personIds.filter((pid) => pid !== id),
           })),
         })),
+      duplicatePerson: (id) => {
+        const src = get().persons.find((p) => p.id === id);
+        if (!src) throw new Error('Person not found');
+        const person = { ...src, id: generateId(), name: `${src.name} (コピー)` };
+        set((s) => ({ persons: [...s.persons, person] }));
+        return person;
+      },
 
       addVenue: (v) => {
         const venue = { ...v, id: generateId() };
@@ -94,6 +177,10 @@ export const useStore = create<AppState>()(
         set((s) => ({
           venues: s.venues.filter((v) => v.id !== id),
           areas: s.areas.filter((a) => a.venueId !== id),
+          events: s.events.map((e) => ({
+            ...e,
+            eventVenueIds: e.eventVenueIds.filter((vid) => vid !== id),
+          })),
         })),
 
       addArea: (a) => {
@@ -119,6 +206,13 @@ export const useStore = create<AppState>()(
           };
         });
       },
+      duplicateArea: (id) => {
+        const src = get().areas.find((a) => a.id === id);
+        if (!src) throw new Error('Area not found');
+        const area = { ...src, id: generateId(), name: `${src.name} (コピー)` };
+        set((s) => ({ areas: [...s.areas, area] }));
+        return area;
+      },
 
       addSession: (sess) => {
         const session = { ...sess, id: generateId() };
@@ -131,6 +225,13 @@ export const useStore = create<AppState>()(
         })),
       deleteSession: (id) =>
         set((s) => ({ sessions: s.sessions.filter((sess) => sess.id !== id) })),
+      duplicateSession: (id) => {
+        const src = get().sessions.find((s) => s.id === id);
+        if (!src) throw new Error('Session not found');
+        const session = { ...src, id: generateId(), title: `${src.title} (コピー)` };
+        set((s) => ({ sessions: [...s.sessions, session] }));
+        return session;
+      },
 
       exportData: () => {
         const { events, persons, venues, areas, sessions } = get();
@@ -140,7 +241,11 @@ export const useStore = create<AppState>()(
         try {
           const data = JSON.parse(json);
           set({
-            events: data.events ?? [],
+            events: (data.events ?? []).map((e: Event) => ({
+              ...e,
+              eventPersonIds: e.eventPersonIds ?? [],
+              eventVenueIds: e.eventVenueIds ?? [],
+            })),
             persons: data.persons ?? [],
             venues: data.venues ?? [],
             areas: data.areas ?? [],
@@ -152,6 +257,18 @@ export const useStore = create<AppState>()(
         }
       },
     }),
-    { name: 'schedule-app-v1' }
+    {
+      name: 'schedule-app-v1',
+      // migrate old data without eventPersonIds/eventVenueIds
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          state.events = state.events.map((e) => ({
+            ...e,
+            eventPersonIds: e.eventPersonIds ?? [],
+            eventVenueIds: e.eventVenueIds ?? [],
+          }));
+        }
+      },
+    }
   )
 );
